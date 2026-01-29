@@ -1,0 +1,685 @@
+---
+title: "Tarea sobre Clasificación: Música Turca y Emociones"
+author: "Francesca Mori"
+date: "2024-03-27"
+output: 
+  github_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Índice
+
+#### Conjunto de Datos
+
+#### Análisis preliminar
+
+##### . Las variables
+
+##### . Visualización
+
+##### . Importancia de las Variables
+
+##### . Variabilidad y Correlación
+
+##### . Análisis de Componentes Principales
+
+#### Particionamiento del Conjunto de Datos
+
+#### Entrenamiento
+
+#### Clasificadores
+
+##### . Primer clasificador: Árbol de Decisión Clásico
+
+##### . Segundo Clasificador: Bootstrap Aggregating
+
+##### . Tercer Clasificador: Random Forest
+
+##### . Cuarto Clasificador: Perceptrón Multicapa
+
+#### Comparación de los Clasificadores
+
+##### . t-Test
+
+##### . Comparación del Rendimiento
+
+##### . Gráficos
+
+##### . Curvas ROC: Bagging, Random Forest, Perceptrón Multicapa
+
+#### Conclusión
+
+# Conjunto de Datos
+
+El conjunto de datos se encuentra en el sitio web UCI Machine Learning Repository (<https://www.archive.ics.uci.edu/dataset/862/turkish+music+emotion>) y fue creado por Bilal Er y I.
+B. Aydilek en 2019.
+Este conjunto de datos se diseñó como un modelo discreto, y consta de cuatro clases: feliz, triste, enojado y relajado.
+Se seleccionaron 100 piezas musicales para cada clase, abarcando diferentes géneros de música turca tanto verbal como no verbal.
+Cada muestra tiene una duración de 30 segundos, y no hay valores faltantes.
+Las demás variables son de tipo numérico (`int`= entero).
+
+```{r}
+library("readxl")
+
+music <- read.csv2("Acoustic_Features.csv", header=T)
+
+attach(music)
+head(music)
+
+sum(is.na(music))
+```
+
+Para la reproducibildiad de los resultados:
+
+```{r}
+nip<-905142
+```
+
+# Análisis preliminar
+
+## Las variables
+
+Comencemos analizando la variable de clasificación o etiqueta para este análisis.
+Hay cuatro categorías: enojado, feliz, relajado y triste.
+Estas representan las emociones que las personas experimentan al escuchar las distintas piezas musicales, con una frecuencia de 100 para cada una.
+
+```{r}
+table(music$Class)
+```
+
+Un aspecto importante a considerar es el equilibrio entre las clases.
+Si existe un desequilibrio significativo entre las clases, debemos contemplar algún procedimiento para que el proceso de entrenamiento se realice con clases más equilibradas.
+
+```{r}
+prop.table(table(music$Class)) * 100
+```
+
+El resultado indica un alto grado de equilibrio.
+Transformamos los nombres de las emociones en colores que pueden representarlas: podemos asociar la Felicidad con el amarillo, la Tristeza con el azul, la Ira con el rojo, y la Relajación con el gris.
+
+```{r}
+music$Class <- replace(music$Class, music$Class == "relax", "grey")
+music$Class <- replace(music$Class, music$Class == "happy", "yellow")
+music$Class <- replace(music$Class, music$Class == "sad", "blue")
+music$Class <- replace(music$Class, music$Class == "angry", "red")
+```
+
+Para generar los diagramas de caja (función `Boxplot`), escalamos los datos.
+
+```{r}
+summary(music)
+music1<-music[,-1]
+music1.sc<-scale(music1)
+boxplot(music1.sc)
+```
+
+Los diagramas de caja representan la distribución de datos para diferentes variables.
+En nuestro caso, se pueden identificar unos valores atípicos, que se encuentran fuera de los límites de los bigotes.
+Por ejemplo, la variable `X_Spectralkurtosis_Mean` tiene una media de 7349, pero su valor máximo es de 121996.
+
+## Visualización
+
+Empezamos a visualizar los datos usando la funcion `pairs` para algunas variables.
+
+```{r}
+library(vctrs)
+pairs(music[,2:10], col=music$Class)
+pairs(music[,10:18], col=music$Class)
+pairs(music[,18:26], col=music$Class)
+pairs(music[,26:34], col=music$Class)
+pairs(music[,34:42], col=music$Class)
+pairs(music[,42:51], col=music$Class)
+```
+
+En general, notamos que existe poca diferenciación entre las clases, y las variables no presentan mucha correlación entre sí.
+Solo entre las columnas desde la 27 hasta la 33 encontramos una correlación, y la felicidad parece ser la emoción que más se distingue de las demás.
+Además, en los últimos gráficos podemos ver una diferencia bastante evidente entre la tristeza y la ira.
+
+Ahora crearemos otro gráfico, específicamente el gráfico de coordenadas paralelas, que nos permitirá visualizar y comparar múltiples variables en un solo gráfico.
+
+```{r}
+require(lattice)
+parallelplot(~music[,2:51]|Class,data=music) 
+```
+
+En este caso, los gráficos no son muy útiles para comprender cómo se comportan las variables.
+Por lo tanto, es importante continuar analizando y realizar pruebas estadísticas apropiadas.
+
+## Importancia de las Variables
+
+Utilizamos el paquete `caret`:
+
+```{r}
+library(caret)
+```
+
+En `caret`, tenemos una función que busca proporcionarnos una importancia a priori de cada variable con respecto a la variable de clasificación.
+La medida de importancia de este filtro se basa en el Área bajo la Curva (AUC) de cada variable por separado.
+Dado que se trata de un problema multiclase, la curva ROC se calcula de forma uno a uno: se calculan todas las AUC y se toma el máximo como medida de importancia de la variable.
+Calculemos ahora el filtro a priori de importancia de las variables.
+La función `findLinearCombos` especifica los motores para la importancia de las variables, modelo por modelo.
+Además, la función `apply` devuelve un vector/matriz/lista de valores obtenidos al aplicar una función a los márgenes de una matriz, y su salida se utiliza como entrada para la función sort().
+
+```{r}
+rocVarImp<-filterVarImp(x = music[,(2:51)], y = as.factor(music$Class))
+
+require(dplyr)
+
+apply(rocVarImp, 1, mean) %>% sort()
+matrix(apply(rocVarImp, 1, mean)[50:1] , ncol=5, byrow=TRUE)[10:1, ]%>%
+image()
+```
+
+Podemos observar las diferentes importancias; por ejemplo, la variable `X_MFCC_Mean_10` parece tener menor importancia para la clasificación (0.52), mientras que la variable `X_HarmonicChangeDetectionFunction_Std` es mucho más relevante (0.94).
+
+## Variabilidad y Correlación
+
+Puede que haya variables con muy poca variabilidad que podrían suprimirse al formar los clasificadores.
+La función `nearZeroVar` nos ayuda a buscar estas variables y puede proporcionarnos información sobre la granularidad de los valores (como un ratio de frecuencias) y el porcentaje de valores únicos (diferentes).
+
+```{r}
+nzv<-nearZeroVar(music, saveMetrics= TRUE)
+(1:4)[nzv$nzv]  #nos dice cuales variables tienen varianza casi nula
+(1:4)[nzv$zeroVar]  #nos dice cuales variables tienen varianza nula
+```
+
+En este caso, no hay variables con varianza casi nula o nula, por lo que no tenemos que eliminar ninguna de ellas.
+
+Tambíen puede ser interesante visualizar el grado de correlación entre las variables.
+Establecemos un umbral igual a 0.75.
+Si hubiera variables altamente correlacionadas, podríamos considerar eliminar algunas de ellas.
+En este caso, existen dos funciones que nos permiten buscar estas relaciones: - La función `findCorrelation` busca a través de una matriz de correlación y devuelve un vector de números enteros correspondientes a las columnas que se deben eliminar para reducir las correlaciones por pares.
+- La función `findLinearCombos` nos indica qué variables forman un combo lineal, lo que nos permite identificar aquellas que podríamos eliminar.
+
+```{r}
+findCorrelation(cor(music[,(2:51)]), cutoff=.75)
+findLinearCombos(music[,(2:51)])
+```
+
+Entonces podemos eliminar las columnas: 32, 26, 27, 29, 23, 28, 18.
+
+```{r}
+music2<-music[,-c(32, 26, 27, 29, 23, 28, 18)]
+```
+
+## Análisis de Componentes Principales
+
+Las Componentes Principales (CP) son combinaciones lineales de las variables originales, que nos proporcionan una colección ordenada de nuevas variables y que explican la mayor parte de la variabilidad.
+Esto nos ayuda a identificar patrones en los datos.
+Si hay una estructura de asociación entre las variables, es probable que se refleje en las primeras componentes principales.
+
+Ahora procederemos a calcular las Componentes Principales de las variables numéricas utilizando la función `princomp`.
+
+```{r}
+music2<-music2[,-1]
+```
+
+```{r}
+music.pc<-princomp(~. ,data=music2, cor=TRUE, scores=TRUE)
+cat("\nComponent loadings:\n")
+print(unclass(loadings(music.pc)))
+cat("\nComponent variances:\n")
+print(music.pc$sd^2)
+cat("\n")
+print(summary(music.pc))
+```
+
+Los pesos de las variables no presentan valores absolutos muy grandes, lo que sugiere que no existe una fuerte correlación entre ellas.
+
+La primera componente principal tiene una desviación estándar aproximada de 2.48 y representa la mayor parte de la variabilidad en los datos (aproximadamente el 14.27%).
+La segunda componente principal tiene una desviación estándar de aproximadamente 1.88 y contribuye alrededor del 8.19% de la variabilidad total.
+Aunque es menos importante que la primera componente, sigue siendo relevante.
+
+Finalmente, añadimos las dos primeras Componentes Principales al conjunto de datos.
+
+```{r}
+music3<-music2
+music3 <- within(music3, {
+    PC1 <- music.pc$scores[,1]
+    PC2 <- music.pc$scores[,2]
+  })
+```
+
+Si consideramos las dos primeras Componentes Principales (CP), podemos representar los datos en un gráfico de dispersión.
+Este gráfico nos permite visualizar el grado de separación entre los datos, detectar la presencia de outliers o posibles no linealidades en su relación.
+Para ello, visualizamos los datos en el plano definido por las dos primeras CP y añadimos las curvas de nivel de densidades normales ajustadas a cada grupo.
+
+```{r}
+require(car)
+scatterplot(PC2~PC1 | Class, regLine=FALSE, smooth=FALSE, boxplots=FALSE, 
+  ellipse=list(levels=c(.25, .5, .9, .95)), by.groups=TRUE, data=music3)
+```
+
+Al analizar este gráfico, se observa que la separación no está claramente definida y se identifican algunos valores atípicos.
+Por lo tanto, no sería recomendable basar nuestro análisis únicamente en las Componentes Principales.
+
+# Particionamiento del Conjunto de Datos
+
+El particionamiento del conjunto inicial en varios subconjuntos es necesario para obtener estimaciones de parámetros o del error de mala clasificación que sean generalizables y para evitar el sobreajuste.
+La función `createDataPartition` automatiza algunos procedimientos que simplifican esta tarea.
+
+En nuestro caso, vamos a particionar la muestra `music` en una parte ($70\%$) para el entrenamiento (`music_pureX`) y el resto ($30\%$) para el ajuste de parámetros (`music_tuneX`).
+
+```{r}
+music<-music[,-c(32, 26, 27, 29, 23, 28, 18)]
+
+set.seed(nip)
+inTraining <- createDataPartition(music$Class, p = .7, list = FALSE)
+
+#para el entrenamiento:
+music_pureX <- music[inTraining,]
+
+#no de entrenamiento:
+music_tuneX  <- music[-inTraining,]
+```
+
+Para poder utilizar Bagging o Random Forest, las variables de salida deben ser de tipo numérico o lógico.
+En nuestro caso, las variables son de tipo carácter, por lo que debemos convertirlas a factores utilizando la función `as.factor()`.
+
+```{r}
+music_tuneX$Class <- as.factor(music_tuneX$Class)
+music_pureX$Class <- as.factor(music_pureX$Class)
+```
+
+# Entrenamiento
+
+Creamos el objeto `fitControl` utilizando la función `trainControl()`.
+Este objeto controla el proceso de entrenamiento y utiliza la validación cruzada repetida (repeated k-fold cross-validation).
+En este caso, realizaremos 10 bloques de validación cruzada, cada uno repetido 3 veces.
+Además, utilizaremos la función `multiClassSummary` para calcular las métricas de rendimiento (como precisión, sensibilidad, etc.) a lo largo de las iteraciones de validación cruzada.
+
+```{r}
+require(caret)
+fitControl <- trainControl(
+               method = "repeatedcv",
+               #validación cruzada de 10 bloques repetida 3 veces
+               number = 10,
+               repeats = 3,
+               classProbs = TRUE,
+               summaryFunction = multiClassSummary,
+               verboseIter = FALSE)
+```
+
+# Clasificadores
+
+Para resolver nuestro problema de clasificación, utilizaremos los siguientes métodos: Árbol de Decisión, Método Bootstrap, Random Forest y Perceptrón Multicapa.
+
+## Primer clasificador: Árbol de Decisión Clásico
+
+Los árboles dividen el conjunto de datos en ramas o nodos, tomando decisiones basadas en características específicas.
+Cada nodo representa una pregunta sobre una característica y las ramas representan las posibles respuestas.
+Al final del árbol, se llega a una hoja que contiene la predicción o clasificación final.
+
+Para establecer un punto de referencia, ajustamos un árbol de decisión clásico utilizando `rpart`.
+
+```{r}
+require(rpart)
+require(rpart.plot)
+
+set.seed(nip)
+music.TREE<- rpart(music_pureX[,1]~. ,data=music_pureX[,-1], method="class",
+                     control=list(minsplit=15,  #número mínimo de obs. requeridas para dividir un nodo
+                                  minbucket=5,  #número mínimo de obs. en un nodo terminal (hoja)
+                                  maxdepth=11,  #profundidad máxima del árbol
+                                  xval=10   #número de pliegues en la validación cruzada k-fold
+                                  )
+                    )
+
+plotcp(music.TREE)
+```
+
+El valor mínimo del error cruzado se encuentra con el parámetro de complejidad $cp=0.028$.
+
+```{r}
+set.seed(nip)
+music.TREE<-prune(music.TREE, cp=0.028)
+rpart.plot(music.TREE, box.palette=list("blue", "grey", "red", "yellow"))
+confusionMatrix(predict(music.TREE, newdata=music_tuneX, type="class"), reference=music_tuneX[,1], positive="Yes",mode="everything")
+```
+
+En el árbol, las percentajes que se obtienen son: Tristeza 24%, Relajación 22%, felicidad 27%, ira 26%.
+En la matriz de confusión, la mayoría de los valores están en la diagonal, excepto por la Tristeza, y la precisión (accuracy) es del 68%.
+La Tasa de No Información (No Information Rate) es del 25%.
+
+## Segundo Clasificador: Bootstrap Aggregating
+
+La variabilidad de los clasificadores se obtiene mediante selección aleatoria de una submuestra de los casos utilizados para construir los clasificadores (árboles).
+La metodología Bagging (Bootstrap Aggregating) es un método de aprendizaje por conjuntos que se utiliza para reducir la varianza en un conjunto de datos ruidoso.
+Genera una forma alternativa de medir el error de clasificación al usar la muestra OOB (out of bag) para estimar este error.
+Aproximadamente una tercera parte de los datos originales quedan fuera de una remuestra bootstrap y pueden servir para medir sin sesgo 'honestamente' el error sobre el árbol generado con los otros dos tercios de los datos que sí forman parte de la remuestra Bootstrap.
+
+```{r}
+library(adabag)
+```
+
+Ahora podemos aplicar el Bagging.
+Usamos `mfinal=5` para visualizar los resultados de manera más efectiva.
+La salida proporciona información sobre cada uno de los 5 árboles, la importancia de las variables y los votos que recibe cada caso del conjunto de entrenamiento, entre otros detalles.
+
+```{r}
+set.seed(nip)
+music.bagging <- bagging(Class~., data=music_pureX, mfinal=5)
+print(music.bagging)
+```
+
+Suele ser interesante analizar la evolución del error, en el conjunto de entrenamiento y en otro de validación.
+
+```{r}
+plot.errorevol(errorevol(music.bagging, music_tuneX), errorevol(music.bagging, music_pureX) ) # test and train
+```
+
+Ahora ajustamos el modelo con ayuda de `caret` y fijamos un $mfinal=100$ para no alargar el tiempo de cálculo.
+
+```{r}
+library(MLmetrics)
+baggrid<-expand.grid(mfinal=100, maxdepth=1:4)
+
+baggFit <- train(Class~., data=music_pureX, method = "AdaBag", 
+                trControl = fitControl,  
+                tuneGrid = baggrid)
+trellis.par.set(caretTheme())
+plot(baggFit)
+```
+
+La mejor precisión se obtiene con una profundidad del arbol igual a 4.0.
+
+```{r}
+confusionMatrix(table(predict(baggFit, newdata=music_tuneX, type="raw"), music_tuneX$Class), positive="Yes",mode="everything")
+```
+
+En la matriz de confusión, la mayoría de los valores están en la diagonal, excepto por la Tristeza, y la precisión (accuracy) es del 74%.
+La Tasa de No Información (No Information Rate) es del 25%.
+
+## Tercer Clasificador: Random Forest
+
+Random Forest es un método de aprendizaje por conjuntos utilizado para clasificación, regresión y otras tareas.
+Consiste en construir una multitud de árboles de decisión durante el entrenamiento y realizar la predicción final agregando las predicciones de todos los árboles individuales.
+Cada árbol se entrena en un subconjunto diferente de los datos (muestreado al azar con reemplazo).
+
+```{r}
+library(randomForest)
+
+music.rf <- randomForest(Class~., data=music_pureX, xtest=music_tuneX[,-1],
+                        ytest=music_tuneX$Class)
+music.rf
+
+plot(music.rf)
+varImpPlot(music.rf) # gráfico de importancia de las variables
+```
+
+La tasa de error OOB (Out-of-Bag) estimada es del 21.79%.
+Esto significa que, al evaluar el modelo con los datos que no se usaron durante el entrenamiento (OOB), el 21.79% de las predicciones fueron incorrectas.
+En la matriz de confusión para los datos OOB, la mayoría de los valores están en la diagonal, excepto por la Tristeza que tiene un error de clase del 42.86%.
+La tasa de error del conjunto de prueba es del 20%, lo que indica que el modelo tuvo un rendimiento ligeramente mejor en el conjunto de prueba en comparación con los datos OOB.
+En la matriz de confusión del conjunto de prueba, la mayoría de los valores están en la diagonal, excepto por la Tristeza que tiene un error de clase del 30%.
+La representación de la importancia de las variables nos dice que `X_HarmonicChangeDetectionFunction_Std` es la variable más importante.
+
+La opción `mtry` (proporción de variables que entran en el arbol) indica el número de variables que se seleccionan/muestrean al azar en cada nodo para determinar el split óptimo, en el caso de árboles de clasificación el valor por defecto es $\sqrt({\tt ncol(x)}) = \sqrt({\tt 44}) = 6$, la raíz del número de variables usadas para predecir.
+
+```{r}
+set.seed(nip)
+music.tuneRF<-tuneRF(music_pureX[,-1], music_pureX[,1], 
+       ntreeTry=300,
+       mtryStart=6,
+       stepFactor=1.5,
+       plot=TRUE,
+       trace=TRUE,
+       doBest=TRUE)
+plot(music.tuneRF)
+```
+
+Si $mtry = 9$, el error es igual al 22.14%.
+
+```{r}
+varImpPlot(music.tuneRF)
+```
+
+La representación de la importancia de las variables nos dice que `X_HarmonicChangeDetectionFunction_Std` es la variable más importante.
+
+```{r}
+predict(music.tuneRF, newdata=music_tuneX)%>%table(., music_tuneX$Class)%>%confusionMatrix(, positive="Yes", mode="everything") 
+#OOB error
+```
+
+En la matriz de confusión, la mayoría de los valores están en la diagonal, y la precisión (accuracy) es del 77%.
+La Tasa de No Información (No Information Rate) es del 25%.
+Las estadísticas proporcionan información sobre el rendimiento del modelo en las diferentes clases.
+Por ejemplo, la Clase de la Felicidad tiene alta especificidad y valor predictivo positivo, lo que indica que se desempeña bien en la identificación correcta de casos positivos.
+
+Ahora ajustamos el modelo con ayuda de `caret` y fijamos un $mfinal=100$ para no alargar el tiempo de cálculo.
+
+```{r}
+tunegrid <- expand.grid(.mtry=c(4,6,9,11))
+
+rfFit <- train(Class~., data=music_pureX, method = "rf", 
+                trControl = fitControl,  
+                tuneGrid = tunegrid)
+
+trellis.par.set(caretTheme())
+plot(rfFit)
+```
+
+Como ya sabíamos, la mejor precisión se obtiene con $mtry = 9$.
+
+```{r}
+confusionMatrix(predict(rfFit, newdata=music_tuneX), music_tuneX[,1])
+```
+
+En la matriz de confusión, la mayoría de los valores están en la diagonal, excepto por la Tristeza, y la precisión (accuracy) es del 79%.
+La Tasa de No Información (No Information Rate) es del 25%.
+
+## Cuarto Clasificador: Perceptrón Multicapa
+
+El Perceptrón Multicapa (MLP) es una red neuronal artificial que se utiliza para el aprendizaje supervisado.
+Está compuesto por múltiples capas de neuronas interconectadas, en las que las salidas de las neuronas de una capa se convierten en entradas para la siguiente capa.
+Construimos la red neuronal.
+
+```{r}
+require(nnet)
+nnetgrid<- expand.grid(size=c(5,10,14,16), decay=c(0.05,0.1))
+set.seed(nip)
+nnetFit<- train(music_pureX[,-1], music_pureX[,1], method = "nnet", 
+              trControl = fitControl,  
+              preProc = c("center", "scale"),
+              tuneGrid=nnetgrid,
+              trace = FALSE)
+trellis.par.set(caretTheme())
+plot(nnetFit)
+```
+
+En el plot se puede notar que en general es mejor $decay=0.05$.
+En 14 los pasos dan la misma precision.
+
+```{r}
+confusionMatrix(predict(nnetFit, newdata=music_tuneX), music_tuneX[,1])
+```
+
+En la matriz de confusión, la mayoría de los valores están en la diagonal, y la precisión (accuracy) es del 77%.
+La Tasa de No Información (No Information Rate) es del 25%.
+Las estadísticas proporcionan información sobre el rendimiento del modelo en las diferentes clases.
+Por ejemplo, la Clase de la Felicidad tiene alta especificidad y valor predictivo negativo.
+
+# Comparación de los Clasificadores
+
+En esta sección vamos a comparar los clasificadores Bagging, Random Forest y Perceptrón Multicapa.
+
+## t-Test
+
+Para comenzar, realizamos un t-test para comparar las medias de las predicciones de los tres modelos.
+
+```{r}
+compare_models(baggFit, rfFit)
+compare_models(baggFit, nnetFit)
+compare_models(rfFit, nnetFit)
+```
+
+El resultado sugiere que no existe una diferencia estadísticamente significativa entre los tres modelos con un nivel de confianza del 95%.
+
+## Comparación del Rendimiento
+
+Ahora procederemos a utilizar la función `resamples` con los tres modelos.
+
+```{r}
+resamp<- resamples(list(BAGG=baggFit, RF=rfFit, NEURAL=nnetFit))
+summary(resamp) # compara  modelos en base a sus remuestras comunes
+```
+
+Esta función permite verificar que los resultados de remuestreo coincidan y calcular las estadísticas de rendimiento de los modelos basadas en 15 remuestreos.
+Hemos observado que, en general, los resultados son muy similares entre los tres modelos.
+Sin embargo, el modelo Random Forest muestra unos valores mejores.
+
+A continuación, utilizamos `summary(diff(resamples))` con los tres modelos.
+
+```{r}
+summary(diff(resamp))
+```
+
+Esta función realiza una comparación del rendimiento entre los modelos, analizando las diferencias en una variedad de métricas.
+En este caso, el Random Forest parece ser el algoritmo más sólido en términos de rendimiento en estas métricas.
+
+## Gráficos
+
+Además, queremos crear los gráficos:
+
+```{r}
+densityplot(resamp, metric=resamp$metric[1])
+dotplot(resamp, metric=resamp$metric[1])
+bwplot(resamp, metric=resamp$metric[1])
+splom(resamp)
+```
+
+Sobre estos datos, el modelo Random Forest parece dar un mejor rendimiento como clasificador que el Bagging y el Perceptrón Multicapa.
+Mientras tanto, el Bagging parece ser el algoritmo menos sólido.
+
+## Curvas ROC
+
+Queremos obtener las curvas ROC y los valores AUC de los tres modelos.
+En clasificación NO binaria, las curvas ROC se deben ajustar.
+Hay dos posibilidades: `One-to-One`y `One-to-rest`.
+Vamos a usar la librería `multiROC` para obtener gráficos ROC de cada categoría relativa al resto y también una medida micro y macro asociadas.
+
+### Bagging
+
+El área bajo las curvas parece ser bastante grande, lo cual sugiere un buen rendimiento del modelo.
+De hecho, los valores de AUC están cercanos a 1, lo que indica que el clasificador Bagging está funcionando bien en la mayoría de las categorías, con una clasificación muy alta en la categoría Felicidad (0.987).
+Solo para la Tristeza, el área es más pequeña y el valor AUC correspondiente es 0.843.
+
+```{r}
+require(multiROC)
+
+## preprocesamiento. 
+true_label_b<-data.frame(class2ind(music_tuneX[,1]))
+colnames(true_label_b)<- paste(colnames(true_label_b), "_true")
+nn_pred_b<-data.frame(predict(baggFit,newdata=music_tuneX[,-1], type="prob"))
+colnames(nn_pred_b)<- paste(colnames(nn_pred_b), "_pred_bagg")
+final_b<-cbind(true_label_b,nn_pred_b)
+
+## llamada principal
+roc_res_b <- multi_roc(final_b, force_diag=T)
+plot_roc_b<-plot_roc_data(roc_res_b)
+
+## valores de AUC
+unlist(roc_res_b$AUC)
+
+## representación gráfica
+require(ggplot2)
+ggplot(plot_roc_b, aes(x = 1-Specificity, y=Sensitivity)) +
+  geom_path(aes(color = Group, linetype=Method), linewidth=1.5) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+               colour='grey', linetype = 'dotdash') +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.justification=c(1, 0), legend.position=c(.95, .05),
+        legend.title=element_blank(), 
+        legend.background = element_rect(fill=NULL, size=0.5, 
+                                         linetype="solid", colour ="black"))
+```
+
+### Random Forest
+
+El área bajo las curvas parece ser bastante grande, lo cual sugiere un buen rendimiento del modelo.
+De hecho, los valores de AUC están cercanos a 1, lo que indica que el clasificador Random Forest está funcionando bien en la mayoría de las categorías, con una clasificación casi perfecta en la categoría Felicidad (0.992).
+Solo para la Tristeza, el área es más pequeña y el valor AUC correspondiente es 0.880.
+
+```{r}
+require(multiROC)
+
+## preprocesamiento. 
+true_label_r<-data.frame(class2ind(music_tuneX[,1]))
+colnames(true_label_r)<- paste(colnames(true_label_r), "_true")
+nn_pred_r<-data.frame(predict(rfFit,newdata=music_tuneX[,-1], type="prob"))
+colnames(nn_pred_r)<- paste(colnames(nn_pred_r), "_pred_rf")
+final_r<-cbind(true_label_r,nn_pred_r)
+
+## llamada principal
+roc_res_r <- multi_roc(final_r, force_diag=T)
+plot_roc_r<-plot_roc_data(roc_res_r)
+
+## valores de AUC
+unlist(roc_res_r$AUC)
+
+## representación gráfica
+require(ggplot2)
+ggplot(plot_roc_r, aes(x = 1-Specificity, y=Sensitivity)) +
+  geom_path(aes(color = Group, linetype=Method), linewidth=1.5) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+               colour='grey', linetype = 'dotdash') +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.justification=c(1, 0), legend.position=c(.95, .05),
+        legend.title=element_blank(), 
+        legend.background = element_rect(fill=NULL, size=0.5, 
+                                         linetype="solid", colour ="black"))
+```
+
+### Perceptrón Multicapa
+
+El área bajo las curvas parece ser bastante grande, lo cual sugiere un buen rendimiento del modelo.
+De hecho, los valores de AUC están cercanos a 1, lo que indica que el clasificador Perceptrón Multicapa está funcionando bien en la mayoría de las categorías, con una clasificación alta en la categoría Felicidad (0.970).
+Solo para la Tristeza, el área es más pequeña y el valor AUC correspondiente es 0.825.
+
+```{r}
+require(multiROC)
+
+## preprocesamiento. 
+true_label_n<-data.frame(class2ind(music_tuneX[,1]))
+colnames(true_label_n)<- paste(colnames(true_label_n), "_true")
+nn_pred_n<-data.frame(predict(nnetFit,newdata=music_tuneX[,-1], type="prob"))
+colnames(nn_pred_n)<- paste(colnames(nn_pred_n), "_pred_mlp")
+final_n<-cbind(true_label_n,nn_pred_n)
+
+## llamada principal
+roc_res_n <- multi_roc(final_n, force_diag=T)
+plot_roc_n<-plot_roc_data(roc_res_n)
+
+## valores de AUC
+unlist(roc_res_n$AUC)
+
+## representación gráfica
+k=c("blue", "grey", "red", "yellow")
+require(ggplot2)
+ggplot(plot_roc_n, aes(x = 1-Specificity, y=Sensitivity)) +
+  geom_path(aes(color = Group, linetype=Method), linewidth=1.5) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+               colour='grey', linetype = 'dotdash') +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.justification=c(1, 0), legend.position=c(.95, .05),
+        legend.title=element_blank(), 
+        legend.background = element_rect(fill=NULL, size=0.5, 
+                                         linetype="solid", colour ="black"))
+```
+
+# Conclusión
+
+El conjunto de datos sobre las emociones asociadas a la música turca consta de cuatro clases: feliz, triste, enojado y relajado.
+Se observa un alto grado de equilibrio entre estas clases, y las demás variables son de tipo numérico (entero), sin valores faltantes.
+Durante el análisis, identificamos que las columnas 32, 26, 27, 29, 23, 28 y 18 formaban un combo lineal, lo que nos permitió eliminarlas del conjunto de datos.
+Al evaluar los pesos de las Componentes Principales, observamos que la separación entre las clases no estaba claramente definida y se identificaron algunos valores atípicos.
+Por lo tanto, decidimos no basar nuestro análisis únicamente en dichos pesos.
+Para realizar la clasificación, dividimos la muestra en dos partes: el $70\%$ para el entrenamiento y el $30\%$ para ajustar los parámetros.
+Utilizamos varios algoritmos: Árbol de Decisión, Método Bootstrap, Random Forest y Perceptrón Multicapa.
+La variable `X_HarmonicChangeDetectionFunction_Std` resultó ser la más relevante para la clasificación.
+Observamos que en general los resultados eran muy similares entre los tres modelos, sin diferencias estadísticamente significativas entre ellos.
+Sin embargo, el modelo Random Forest muestraba unos valores mejores y parecía el algoritmo más sólido en términos de rendimiento.

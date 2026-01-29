@@ -1,0 +1,496 @@
+---
+title: "Tarea sobre Clasificación (Caret)"
+author: "Francesca Mori"
+date: "2024-03-27"
+output: 
+  github_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Objetivos
+
+Nuestro objetivo es usar las funciones de `caret` para ajustar dos clasificadores y compararlos.
+
+Para lograrlo, seguiremos estos pasos: 
+   - Realizar una partición adecuada del dataset; 
+   - Analizar las variables numéricas, considerando posibles transformaciones o evaluando su importancia a priori; 
+   - Planificar un esquema de entrenamiento; 
+   - Aplicar `train` a dos clasificadores, ajustando sus respectivos hiperparámetros; 
+   - Evaluar el rendimiento de cada clasificador por separado y comparar los resultados.
+
+# Conjunto de Datos
+
+El conjunto de datos se encuentra en la biblioteca MASS y consta de 200 filas y 8 columnas. Estas columnas describen 5 medidas morfológicas tomadas de 50 cangrejos. Cada cangrejo pertenece a una de las dos formas de color y ambos sexos de la especie Cangrejo de Roca Púrpura (Leptograpsus variegatus).
+
+```{r}
+library(MASS)
+data(crabs)
+dim(crabs)
+head(crabs)
+
+summary(crabs)
+
+```
+
+En primer lugar vamos a generar la variable `spex`, combinando las categorías de `specie` y `sex`, obteniendo así cuatro categorías. Esta será la variable de agrupación o etiqueta para este análisis.
+
+```{r}
+crabs$spex<-as.factor(paste(crabs$sp,crabs$sex, sep=""))
+```
+
+
+## Visualización
+
+Entrenaremos clasificadores de `spex` basados en las 5 variables numéricas.
+
+```{r}
+pairs(crabs[,4:8], col=crabs$spex)
+```
+
+Notamos que existe poca diferenciación: las variables presentan mucha correlación entre sí. Sin embargo, algunas de ellas están separadas, por lo que podemos continuar con el análisis. 
+Crearemos otro gráfico, específicamente el gráfico de coordenadas paralelas, que en este caso resulta ser más informativo.
+
+```{r}
+require(lattice)
+parallelplot(~crabs[,4:8]|spex,data=crabs) 
+```
+
+Podemos utilizar también gráficos del tipo *splom* (visualización basata sobre una matriz de gráficos de dispersión). Este gráfico nos anticipa que los clasificadores van a tener un rendimiento alto.
+
+```{r}
+require(car)
+scatterplotMatrix(~BD+CW+CL+RW+FL | spex, 
+                  regLine=FALSE, smooth=TRUE,      
+                 diagonal=list(method="density"), by.groups=TRUE, data=crabs)
+```
+
+# Pre-Procesamiento y Selección de Características
+
+Utilizamos el paquete CARET:
+
+```{r}
+library(caret)
+```
+
+Puede que haya variables con muy poca variabilidad que podrían suprimirse al formar los clasificadores. 
+La función `nearZeroVar` nos ayuda a buscar estas variables y puede proporcionarnos información sobre la granularidad de los valores (como un ratio de frecuencias) y el porcentaje de valores únicos (diferentes).
+
+```{r}
+nzv<-nearZeroVar(crabs, saveMetrics= TRUE)
+(1:4)[nzv$nzv]  #nos dice cuales variables tienen varianza casi nula
+(1:4)[nzv$zeroVar]  #nos dice cuales variables tienen varianza nula
+iremove<-(1:4)[nzv$nzv]  #quito las variables con varianza casi nula
+```
+
+En este caso, no hay variables con varianza casi nula o nula, por lo que no tenemos que eliminar ninguna de ellas.
+
+Ahora analizamos las correlaciones entre variables, estableciendo un umbral igual a 0.75. 
+Si hubiera variables altamente correlacionadas, podríamos considerar eliminar algunas de ellas. 
+En este caso, existen dos funciones que nos permiten buscar estas relaciones:
+   - La función `findCorrelation` busca a través de una matriz de correlación y devuelve un vector de números enteros correspondientes a las columnas que se deben eliminar para reducir las correlaciones por pares.
+   - La función `findLinearCombos` nos indica qué variables forman un combo lineal, lo que nos permite identificar aquellas que podríamos eliminar.
+
+```{r}
+findCorrelation(cor(crabs[,(4:8)]), cutoff=.75)
+findLinearCombos(crabs[,(4:8)])
+```
+En este caso no es necesario eliminar ninguna columna.
+
+En `caret`, tenemos una función que busca proporcionarnos una importancia a priori de cada variable con respecto a la variable de clasificación. La medida de importancia de este filtro se basa en el Área Bajo la Curva (AUC) de cada variable por separado.
+Dado que se trata de un problema multiclase, la curva ROC se calcula de forma uno a uno: se calculan todas las AUC y se toma el máximo como medida de importancia de la variable.
+Calculemos entonces el filtro a priori de importancia de las variables. La función `findLinearCombos` especifica los motores para la importancia de las variables, modelo por modelo. Además, la función `apply` devuelve un vector/matriz/lista de valores obtenidos al aplicar una función a los márgenes de una matriz, y su salida se utiliza como entrada para la función sort().
+
+
+```{r}
+rocVarImp<-filterVarImp(x = crabs[,(4:8)], y = as.factor(crabs$spex))
+
+require(dplyr)
+
+apply(rocVarImp, 1, mean) %>% sort()
+matrix(apply(rocVarImp, 1, mean)[1:4] , ncol=2, byrow=TRUE)[2:1, ]%>%
+image()
+```
+
+Podemos observar las diferentes importancias; por ejemplo, la variable CW parece tener menor importancia para la clasificación, mientras que la variable FL es mucho más relevante.
+
+Un último aspecto a considerar es el equilibrio entre las clases. Si existe un desequilibrio significativo entre las clases, debemos contemplar algún procedimiento para que el proceso de entrenamiento se realice con clases más equilibradas.
+
+```{r}
+prop.table(table(crabs$spex)) * 100
+```
+
+El resultado indica un alto grado de equilibrio.
+
+Las Componentes Principales (CP) son combinaciones lineales de las variables originales, que nos proporcionan una colección ordenada de nuevas variables. De la primera a la última CP, cada una captura más variabilidad original y es incorrelada con las anteriores. Ahora procederemos a calcular las Componentes Principales de las variables numéricas, coloreadas por la etiqueta `spex`.
+
+```{r}
+
+crabs.PC <- princomp(~BD+CW+CL+RW+FL, cor=TRUE, 
+  data=crabs)
+  cat("\nComponent loadings:\n")
+  print(unclass(loadings(crabs.PC)))
+  cat("\nComponent variances:\n")
+  print(crabs.PC$sd^2)
+  cat("\n")
+  print(summary(crabs.PC))
+  
+  crabs <- within(crabs, {
+    PC2 <- crabs.PC$scores[,2]
+    PC1 <- crabs.PC$scores[,1]
+  }) # añadimos las dos primeras Componentes Principales a crabs
+
+
+```
+
+
+Si consideramos las dos primeras Componentes Principales (CP), podemos representar los datos en un gráfico de dispersión. Este gráfico nos permite visualizar el grado de separación entre los datos, detectar la presencia de outliers o posibles no linealidades en su relación. Para ello, visualizamos los datos en el plano definido por las dos primeras CP y añadimos las curvas de nivel de densidades normales ajustadas a cada grupo.
+
+```{r}
+scatterplot(PC2~PC1 | spex, regLine=FALSE, smooth=FALSE, boxplots=FALSE, 
+  ellipse=list(levels=c(.25, .5, .9, .95)), by.groups=TRUE, data=crabs)
+```
+
+Desde este gráfico, podemos observar que la separación no está bien definida, por lo que no sería recomendable trabajar únicamente con las Componentes Principales.
+
+## Particionamiento del Conjunto de Datos
+
+El particionamiento del conjunto inicial en varios subconjuntos es necesario para obtener estimaciones de parámetros o del error de mala clasificación que sean generalizables y para evitar el sobreajuste. 
+La función `createDataPartition` automatiza algunos procedimientos que simplifican esta tarea.
+
+En nuestro caso, vamos a particionar la muestra `Crabs` en una parte ($70\%$) para el entrenamiento y el resto ($30\%$) para el ajuste de parámetros.
+
+```{r}
+set.seed(825)   # permite la reproducibildiad de resultados
+
+inTraining <- createDataPartition(crabs$spex, p = .7, list = FALSE)
+
+#para el entrenamiento:
+crabs_pureX <- crabs[inTraining,(4:8)]
+crabs_pureY <- factor(crabs$spex[inTraining])
+
+#no de entrenamiento:
+crabs_tuneX  <- crabs[-inTraining,(4:8)]
+crabs_tuneY <- factor(crabs$spex[-inTraining])
+
+crabs_pure <- crabs[inTraining,(4:9)]
+```
+
+
+# Clasificación
+
+## Planificación del procedimiento de entrenamiento
+
+Realizamos el entrenamiento utilizando validación cruzada repetida.
+
+```{r}
+require(caret)
+fitControl <- trainControl(
+  method = "repeatedcv",  # validación cruzada repetida
+  number = 5,
+  summaryFunction= multiClassSummary,  # función de resumen
+  repeats = 3, # repetimos 3 veces
+  verboseIter = FALSE )
+```
+
+
+## Primer Clasificador: K-nn 
+
+Este es un clasificador sencillo con pocos parámetros adicionales.
+
+Seleccionamos una rejilla para el único parámetro a ajustar, $k$.
+
+```{r}
+knngrid<-expand.grid(k=1:6)  # número de vecinos
+
+set.seed(825) 
+knnFit <- train(crabs_pureX, crabs_pureY,  #X e Y de entrenamiento, 
+                method = "knn", 
+                trControl = fitControl,  
+                preProc = c("center", "scale"),  # voy a centrar y escalar
+                tuneGrid = knngrid)
+
+trellis.par.set(caretTheme())
+plot(knnFit)
+
+confusionMatrix(predict(knnFit, newdata=crabs_tuneX), crabs_tuneY)
+```
+
+Al observar el gráfico, queremos evaluar cómo ha funcionado el modelo. La precisión más alta se obtiene con $k=1$ vecino, aunque las precisiones son bastante similares.
+
+La función `confusionMatrix` calcula una tabla cruzada de clases observadas y predichas en un nuevo conjunto de datos utilizando el mejor modelo.
+En la matriz de confusión, casi todos los valores están en la diagonal, y la precisión (accuracy) es del 88%.
+La Tasa de No Información (No Information Rate) es el porcentaje de buena calificación al asignar etiquetas al azar, y es igual al 25%.
+
+
+## Segundo Clasificador: SVM con Base Radial
+
+Para este clasificador, podemos elegir varios valores de sigma (un parámetro que controla la suavidad del límite de decisión) y C (el parámetro de regularización que equilibra la obtención de un margen alto y la correcta clasificación de todos los puntos de entrenamiento). Realizaremos quince réplicas de validación cruzada.
+
+```{r}
+require(kernlab)
+
+svmgrid<- expand.grid(sigma=c(0.1, 0.5, 0.9, 1.5), C=c(0.1, 0.5, 1, 1.5))
+
+set.seed(825)
+svmBRFit<- train(crabs_pureX, crabs_pureY, method = "svmRadial", 
+              trControl = fitControl,  
+              preProc = c("center", "scale"),
+              tuneGrid=svmgrid,
+              prob.model=TRUE) # probability = TRUE
+
+trellis.par.set(caretTheme())
+plot(svmBRFit)
+
+confusionMatrix(predict(svmBRFit, newdata=crabs_tuneX), crabs_tuneY)
+```
+
+
+
+En primer lugar, al observar el gráfico, queremos evaluar cómo ha funcionado el modelo. 
+El eje horizontal representa el valor de sigma: valores más bajos pueden llevar a un modelo más complejo y ajustado a los datos de entrenamiento, mientras que valores más altos pueden suavizar la frontera y potencialmente mejorar la generalización. 
+El eje vertical muestra la precisión del modelo, es decir, cuántas clasificaciones fueron correctas. Valores más altos indican un mejor rendimiento del modelo. 
+Las líneas de diferentes colores (correspondientes a diferentes valores del parámetro C) muestran una tendencia ascendente a medida que sigma aumenta, lo que sugiere que el modelo mejora su precisión con un sigma más alto. 
+La precisión más alta se obtiene para sigma=0.9 y C=1.5.
+
+En la matriz de confusión, casi todos los valores están en la diagonal, y la precisión (accuracy) es del 88%. 
+La Tasa de No Información (No Information Rate) es del 25%.
+
+
+# Comparación de Clasificadores I
+
+Una ventaja de haber utilizado la misma semilla y el mismo esquema de entrenamiento es la posibilidad de comparar dos o más modelos entre sí. Se compara el rendimiento muestra a muestra, ya que se utiliza la misma partición en todos los clasificadores.
+
+En primer lugar, realizamos un t-test para comparar las medias de las predicciones de los dos modelos. 
+
+```{r}
+compare_models(knnFit, svmBRFit)
+```
+El valor p es mayor que el umbral común de 0.05, lo que indica que no hay una diferencia estadísticamente significativa entre los dos modelos con un nivel de confianza del 95%. La estimación de la muestra para la media de x es 0.033, que representa la diferencia promedio entre las predicciones de los modelos `knnFit` y `svmBRFit`.
+
+Ahora utilizamos la función `resamples` con los dos modelos.
+
+```{r}
+resamp<- resamples(list(SVM=svmBRFit, KNN=knnFit))
+summary(resamp) # compara  modelos en base a sus remuestras comunes
+```
+Esta función permite verificar que los resultados de remuestreo coincidan y calcular las estadísticas de rendimiento de los modelos basadas en 15 remuestreos.
+
+En general, los resultados son muy similares entre los dos modelos. Sin embargo, el modelo SVM tiene unos valores ligeramente peores que el modelo K-nn.
+
+A continuación, utilizamos `summary(diff(resamples))` con los dos modelos.
+
+```{r}
+summary(diff(resamp))
+```
+
+Esta función realiza una comparación del rendimiento entre los modelos, analizando las diferencias en una variedad de métricas. En este caso, las diferencias son mínimas y no son estadísticamente significativas.
+
+También queremos hacer los gráficos:
+
+```{r}
+densityplot(resamp, metric=resamp$metric[1])
+dotplot(resamp, metric=resamp$metric[1])
+bwplot(resamp, metric=resamp$metric[1])
+splom(resamp)
+```
+
+Sobre estos datos, el modelo K-nn parece dar un rendimiento ligeramente mejor como clasificador que el SVM con Base Radial.
+
+
+## curvas ROC para clasificadores multi-etiqueta
+
+Queremos obtener las curvas ROC y los valores AUC.
+Las curvas ROC ayudan a evaluar el rendimiento de un modelo de clasificación en función de su capacidad para distinguir entre diferentes clases. El eje X del gráfico representa la especificidad (tasa de falsos positivos) y varía de 0.00 a 1.00, el eje Y representa la sensibilidad (tasa de verdaderos positivos) y varía de 0.00 a 1.00.
+La línea diagonal punteada desde (0,0) hasta (1,1) representa el rendimiento de un clasificador aleatorio.
+Cuanto más cerca esté la curva del vértice superior izquierdo (punto ideal), mejor será el rendimiento del modelo.El área bajo la curva (valores AUC) es un indicador del rendimiento global del modelo. Un AUC cercano a 1.00 sugiere un modelo excelente.
+
+En clasificación NO binaria, las curvas ROC se deben ajustar. Hay dos posibilidades: `One-to-One`y `One-to-rest`.
+Vamos a usar la librería `multiROC` para obtener gráficos ROC de cada categoría relativa al resto y también una medida micro y macro asociadas.
+
+
+### Curvas ROC del modelo k-nn
+
+El área bajo las curvas parece ser bastante grande, lo cual sugiere un buen rendimiento del modelo. De hecho, los valores de AUC están cercanos a 1, lo que indica que el clasificador k-nn está funcionando bien en la mayoría de las categorías, con una clasificación muy alta en la categoría ‘BM’ (0.994).
+
+```{r}
+require(multiROC)
+
+## preprocesamiento
+true_label<-data.frame(class2ind(crabs_tuneY))
+colnames(true_label)<- paste(colnames(true_label), "_true")
+pred_knn<-data.frame(predict(knnFit,newdata=crabs_tuneX, type="prob"))
+colnames(pred_knn)<- paste(colnames(pred_knn), "_pred_knn")
+final_knn<-cbind(true_label,pred_knn)
+
+## llamada principal
+roc_knn <- multi_roc(final_knn, force_diag=T)
+plot_roc_knn<-plot_roc_data(roc_knn)
+
+## valores de AUC
+unlist(roc_knn$AUC)
+
+## representación gráfica
+require(ggplot2)
+ggplot(plot_roc_knn, aes(x = 1-Specificity, y=Sensitivity)) +
+  geom_path(aes(color = Group, linetype=Method), linewidth=1.5) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+               colour='grey', linetype = 'dotdash') +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.justification=c(1, 0), legend.position=c(.95, .05),
+        legend.title=element_blank(), 
+        legend.background = element_rect(fill=NULL, linewidth=0.5, 
+                                         linetype="solid", colour ="black"))
+```
+
+
+### Curvas ROC del modelo SVM
+
+El área bajo las curvas parece ser bastante grande, lo cual sugiere un buen rendimiento del modelo. De hecho, los valores de AUC están cercanos a 1, lo que indica que el clasificador SVM está funcionando bien en la mayoría de las categorías, con una clasificación casi perfecta en la categoría ‘OM’ (0.999).
+
+
+```{r}
+require(multiROC)
+
+## preprocesamiento
+pred_svm<-data.frame(predict(svmBRFit,newdata=crabs_tuneX, type="prob"))
+colnames(pred_svm)<- paste(colnames(pred_svm), "_pred_svm")
+final_svm<-cbind(true_label,pred_svm)
+
+## llamada principal
+roc_svm <- multi_roc(final_svm, force_diag=T)
+plot_roc_svm<-plot_roc_data(roc_svm)
+
+## valores de AUC
+unlist(roc_svm$AUC)
+
+## representación gráfica
+require(ggplot2)
+ggplot(plot_roc_svm, aes(x = 1-Specificity, y=Sensitivity)) +
+  geom_path(aes(color = Group, linetype=Method), linewidth=1.5) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+               colour='grey', linetype = 'dotdash') +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.justification=c(1, 0), legend.position=c(.95, .05),
+        legend.title=element_blank(), 
+        legend.background = element_rect(fill=NULL, linewidth=0.5, 
+                                         linetype="solid", colour ="black"))
+```
+
+
+# Ensemble Models
+
+Los modelos GBM (Gradient Boosting Machines) se han revelado en los últimos años como unos algoritmos de aprendizaje muy competitivos. Permiten rapidez (paralelismo y stochastic gradient), flexibilidad en las funciones de pérdida que se pueden optimizar y aplicabilidad a conjuntos de datos con poco o nulo preprocesamiento. Al tratarse de métodos de ‘consenso’, siguen siendo modelos en algunos casos difíciles de interpretación. También dependen de numerosos hiperparámetros que en ocasiones interactúan y dificultan o ralentizan el ‘ajuste’ óptimo de los algoritmos al intentar evitar el sobreajuste.
+
+Ahora queremos ajustar un modelo de tipo GBM para nuestros datos, optimizando algunos de sus hiperparámetros. En primer lugar, creamos un mallado de hiperparámetros. Luego utilizamos `train` con method=`gbm` e indicamos los hiperparámetros seleccionados.
+
+```{r}
+gbmgrid<-expand.grid(shrinkage=c(0.1, 0.01),
+                     n.trees=c(1000,  2000), 
+                     interaction.depth=1:2,
+                     n.minobsinnode=5
+                     )
+set.seed(825)
+gbmFit <- train(crabs_pureX, crabs_pureY, method = "gbm", 
+                trControl = fitControl,  
+                tuneGrid = gbmgrid,
+                verbose = FALSE)
+trellis.par.set(caretTheme())
+plot(gbmFit)
+```
+
+```{r}
+print(gbmFit)
+confusionMatrix(predict(gbmFit, newdata=crabs_tuneX), crabs_tuneY, positive="Yes")
+```
+
+El gráfico muestra los resultados de un modelo GBM aplicado a los datos. 
+El eje horizontal generalmente representa alguna variable o característica. 
+El eje vertical muestra la respuesta o el resultado del modelo.
+Observamos que los puntos en el gráfico están agrupados cerca de una línea diagonal, lo que indica que el modelo está ajustando bien los datos. 
+La precisión más alta se obtiene con una tasa de aprendizaje de 0.1 (2000 árboles) y una profundidad de interacción de 2.
+
+En la matriz de confusión, casi todos los valores están en la diagonal, y la precisión (accuracy) es del 78%. 
+La Tasa de No Información (No Information Rate) es del 25%.
+
+
+## Comparación de Clasificadores II
+
+En esta sección, ampliamos la comparativa entre clasificadores al incluir el modelo gbm.
+
+Para comenzar, realizamos un t-test para comparar las medias de las predicciones de los tres modelos.
+
+```{r}
+compare_models(knnFit, svmBRFit)
+compare_models(knnFit, gbmFit)
+compare_models(svmBRFit, gbmFit)
+```
+
+Ya hemos observado que no existe una diferencia estadísticamente significativa entre los modelos knnFit y svmBRFit, con un nivel de confianza del 95%. También no hay una diferencia estadísticamente significativa entre los modelos gbmFit y svmBRFit. Sin embargo, al comparar gbmFit con knnFit, el valor p es menor que 0.05, lo que indica una diferencia estadísticamente significativa entre los modelos, también con un nivel de confianza del 95%.
+
+Ahora procederemos a utilizar la función `resamples` con los tres modelos.
+
+```{r}
+resamp<- resamples(list(SVM=svmBRFit, KNN=knnFit, GBM=gbmFit))
+summary(resamp) # compara los modelos
+```
+
+Esta función permite verificar que los resultados de remuestreo coincidan y calcular las estadísticas de rendimiento de los modelos basadas en 15 remuestreos. Hemos observado que, en general, el modelo SVM tiene unos valores ligeramente peores que el modelo K-nn. El modelo GBM también muestra unos valores peores.
+
+A continuación, utilizamos `summary(diff(resamples))` con los tres modelos.
+
+```{r}
+summary(diff(resamp))
+```
+
+Esta función realiza una comparación del rendimiento entre los modelos, analizando las diferencias en una variedad de métricas. 
+En este caso, el KNN parece ser el algoritmo más sólido en términos de rendimiento en estas métricas.
+
+Además, queremos crear los gráficos:
+
+```{r}
+densityplot(resamp, metric=resamp$metric[1])
+dotplot(resamp, metric=resamp$metric[1])
+bwplot(resamp, metric=resamp$metric[1])
+splom(resamp)
+```
+
+Sobre estos datos, el modelo GBM parece dar peor rendimiento como clasificador que el SVM con Base Radial y el k-NN, mientras que el k-NN parece ser el algoritmo más sólido.
+
+
+### Curvas ROC del modelo GMB
+
+El área bajo las curvas parece ser bastante grande, lo cual sugiere un buen rendimiento del modelo. De hecho, los valores de AUC están cercanos a 1, lo que indica que el clasificador SVM está funcionando bien en la mayoría de las categorías, con una clasificación muy alta en la categoría ‘OF’ (0.996).
+
+```{r}
+require(multiROC)
+
+## preprocesamiento
+pred_gmb<-data.frame(predict(gbmFit,newdata=crabs_tuneX, type="prob"))
+colnames(pred_gmb)<- paste(colnames(pred_gmb), "_pred_gmb")
+final_gmb<-cbind(true_label,pred_gmb)
+
+## llamada principal
+roc_gmb <- multi_roc(final_gmb, force_diag=T)
+plot_roc_gmb<-plot_roc_data(roc_gmb)
+
+## valores de AUC
+unlist(roc_gmb$AUC)
+
+## representación gráfica
+require(ggplot2)
+ggplot(plot_roc_gmb, aes(x = 1-Specificity, y=Sensitivity)) +
+  geom_path(aes(color = Group, linetype=Method), linewidth=1.5) +
+  geom_segment(aes(x = 0, y = 0, xend = 1, yend = 1), 
+               colour='grey', linetype = 'dotdash') +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5), 
+        legend.justification=c(1, 0), legend.position=c(.95, .05),
+        legend.title=element_blank(), 
+        legend.background = element_rect(fill=NULL, linewidth=0.5, 
+                                         linetype="solid", colour ="black"))
+```
+
+
